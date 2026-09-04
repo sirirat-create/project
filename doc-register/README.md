@@ -70,7 +70,7 @@ npm run notify   # สรุปเอกสารค้าง + รายกา�
 0 9 * * 1-5  cd /path/to/doc-register && npm run notify
 ```
 
-ปรับเกณฒ์ "ค้างนาน" ได้ด้วย `STALE_HOURS`
+ปรับเกณฑ์ "ค้างนาน" ได้ด้วย `STALE_HOURS`
 
 ## โครงสร้างโค้ด
 

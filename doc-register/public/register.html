@@ -130,7 +130,7 @@
       showMessage(msg, '');
       try {
         const found = await api(`/api/documents/${current.id}/ocr`, { method: 'POST' });
-        // เติมเชพาะช่องที่ยังว่าง เพื่อไม่ทับข้อมูลที่คนกรอกไว้แล้ว
+        // เติมเฉพาะช่องที่ยังว่าง เพื่อไม่ทับข้อมูลที่คนกรอกไว้แล้ว
         let filled = 0;
         for (const field of ['doc_type', 'vendor', 'doc_number', 'doc_date', 'amount', 'subject']) {
           const input = document.getElementById(field);
