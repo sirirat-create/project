@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>รับเอกสารจากทีม GM</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main>
+    <div id="msg" class="msg"></div>
+
+    <section class="card">
+      <h2>ใบส่งมอบรอรับ <span class="sub" id="pendingCount"></span></h2>
+      <p class="hint">ตรวจเอกสารตัวจริงให้ครบตามรายการ แล้วกดรับ — ระบบบันทึกชื่อผู้รับและวันเวลาให้อัตโนมัติ ไม่ต้องลงชื่อใน Excel</p>
+      <div id="pending"></div>
+    </section>
+
+    <section id="detailCard" class="card" hidden>
+      <h2 id="detailTitle"></h2>
+      <div id="detail"></div>
+      <form id="form" style="margin-top:14px">
+        <label>หมายเหตุการรับ (ถ้ามี)
+          <textarea id="note" placeholder="เช่น ใบกำกับ 69-0004 ขาด 1 ฉบับ / เอกสารครบถ้วน"></textarea>
+        </label>
+        <div class="actions">
+          <button type="submit">ยืนยันรับเอกสารทั้งชุด</button>
+          <button type="button" id="closeBtn" class="ghost">ปิด</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="card">
+      <h2>รับล่าสุด</h2>
+      <div id="accepted"></div>
+    </section>
+  </main>
+
+  <script type="module">
+    import {
+      api, requireUser, onSubmit, showMessage, pageHeader,
+      docCard, escapeHtml, formatDateTime, elapsed,
+    } from '/app.js';
+
+    pageHeader('รับเอกสารจากทีม GM');
+    await requireUser('ACCOUNTING');
+
+    const msg = document.getElementById('msg');
+    const detailCard = document.getElementById('detailCard');
+    let current = null;
+
+    async function loadPending() {
+      const handovers = await api('/api/handovers?pending=1');
+      document.getElementById('pendingCount').textContent = `${handovers.length} ใบ`;
+      document.getElementById('pending').innerHTML = handovers.length
+        ? handovers.map((h) => `<div class="doc">
+             <div class="doc-head">
+               <span class="reg">${escapeHtml(h.code)}</span>
+               <span class="pill IN_TRANSIT">รอรับ</span>
+               <span class="muted" style="font-size:13px">${h.document_count} ฉบับ · ส่งโดย ${escapeHtml(h.created_by)} ${formatDateTime(h.created_at)} · รอมา ${elapsed(h.created_at)}</span>
+             </div>
+             <div class="actions" style="margin-top:10px">
+               <button type="button" data-open="${h.id}">เปิดตรวจรับ</button>
+             </div>
+           </div>`).join('')
+        : '<p class="empty">ไม่มีใบส่งมอบรอรับ 🎉</p>';
+    }
+
+    async function loadAccepted() {
+      const docs = await api('/api/documents?status=ACCEPTED&limit=10');
+      document.getElementById('accepted').innerHTML = docs.length
+        ? docs.map((d) => docCard(d)).join('')
+        : '<p class="empty">ยังไม่มีประวัติการรับ</p>';
+    }
+
+    async function openHandover(id) {
+      current = await api(`/api/handovers/${id}`);
+      document.getElementById('detailTitle').innerHTML =
+        `ตรวจรับ ${escapeHtml(current.code)} <span class="sub">${current.documents.length} ฉบับ · ส่งโดย ${escapeHtml(current.created_by)}</span>`;
+      document.getElementById('detail').innerHTML = current.documents.map((d) => docCard(d)).join('');
+      document.getElementById('note').value = '';
+      detailCard.hidden = false;
+      detailCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    document.getElementById('pending').addEventListener('click', async (event) => {
+      const id = event.target.dataset.open;
+      if (!id) return;
+      showMessage(msg, '');
+      try {
+        await openHandover(id);
+      } catch (err) {
+        showMessage(msg, err.message);
+      }
+    });
+
+    document.getElementById('closeBtn').addEventListener('click', () => {
+      detailCard.hidden = true;
+      current = null;
+    });
+
+    onSubmit(document.getElementById('form'), msg, async () => {
+      if (!current) throw new Error('กรุณาเลือกใบส่งมอบก่อน');
+      const handover = await api(`/api/handovers/${current.id}/accept`, {
+        method: 'POST',
+        body: { note: document.getElementById('note').value.trim() },
+      });
+      detailCard.hidden = true;
+      current = null;
+      showMessage(msg, `รับเอกสารตามใบส่งมอบ ${handover.code} เรียบร้อย (${handover.documents.length} ฉบับ)`, 'ok');
+      await Promise.all([loadPending(), loadAccepted()]);
+    });
+
+    await Promise.all([loadPending(), loadAccepted()]);
+  </script>
+</body>
+</html>

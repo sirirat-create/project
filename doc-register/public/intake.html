@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>รับเอกสารเข้าระบบ</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main>
+    <div id="msg" class="msg"></div>
+
+    <section class="card">
+      <h2>รับเอกสารเข้าระบบ <span class="sub">ขั้นที่ 1 — ทีมคลังสินค้า</span></h2>
+      <p class="hint">ถ่ายรูปเอกสารที่ได้รับให้ครบทุกใบ แล้วกรอกเท่าที่รู้ — ที่เหลือทีม GM เติมตอนลงทะเบียน</p>
+
+      <form id="form">
+        <label>รูปถ่ายเอกสาร (จำเป็น · ได้ถึง 10 รูป)
+          <input id="photos" type="file" name="photos" accept="image/*,application/pdf" capture="environment" multiple required>
+        </label>
+        <div class="row">
+          <label>ผู้ส่ง / บริษัท
+            <input id="vendor" autocomplete="off">
+          </label>
+          <label>ประเภทเอกสาร
+            <select id="doc_type"><option value="">— ยังไม่ระบุ —</option></select>
+          </label>
+        </div>
+        <div class="row">
+          <label>เลขที่เอกสาร
+            <input id="doc_number" autocomplete="off">
+          </label>
+          <label>จำนวนฉบับ
+            <input id="copies" type="number" min="1" step="1" placeholder="1">
+          </label>
+        </div>
+        <label>หมายเหตุ
+          <textarea id="note" placeholder="เช่น เอกสารเปียก / ขาด / ได้จากพนักงานส่งของบริษัท..."></textarea>
+        </label>
+        <button type="submit">บันทึกและออกเลขทะเบียน</button>
+      </form>
+    </section>
+
+    <section id="recentCard" class="card" hidden>
+      <h2>รับเข้าวันนี้ <span class="sub" id="recentCount"></span></h2>
+      <div id="recent"></div>
+    </section>
+  </main>
+
+  <script type="module">
+    import {
+      api, requireUser, onSubmit, showMessage, pageHeader, docCard, DOC_TYPES,
+    } from '/app.js';
+
+    pageHeader('รับเอกสารเข้าระบบ');
+    await requireUser('WAREHOUSE', 'GM');
+
+    const msg = document.getElementById('msg');
+    const form = document.getElementById('form');
+    document.getElementById('doc_type').insertAdjacentHTML(
+      'beforeend',
+      DOC_TYPES.map((t) => `<option>${t}</option>`).join('')
+    );
+
+    async function loadToday() {
+      const today = new Date().toLocaleDateString('sv-SE'); // YYYY-MM-DD ตามเวลาเครื่อง
+      const docs = await api(`/api/documents?from=${today}&to=${today}`);
+      document.getElementById('recentCard').hidden = docs.length === 0;
+      document.getElementById('recentCount').textContent = `${docs.length} ฉบับ`;
+      document.getElementById('recent').innerHTML = docs.map((d) => docCard(d)).join('');
+    }
+
+    onSubmit(form, msg, async () => {
+      const files = document.getElementById('photos').files;
+      if (files.length === 0) throw new Error('กรุณาแนบรูปถ่ายเอกสารอย่างน้อย 1 รูป');
+
+      const body = new FormData();
+      for (const file of files) body.append('photos', file);
+      for (const id of ['vendor', 'doc_type', 'doc_number', 'copies', 'note']) {
+        const value = document.getElementById(id).value.trim();
+        if (value) body.append(id, value);
+      }
+
+      const doc = await api('/api/documents', { method: 'POST', body });
+      form.reset();
+      showMessage(msg, `บันทึกแล้ว เลขทะเบียน ${doc.reg_no} — ส่งเอกสารตัวจริงให้ทีม GM ได้เลย`, 'ok');
+      await loadToday();
+    });
+
+    await loadToday();
+  </script>
+</body>
+</html>

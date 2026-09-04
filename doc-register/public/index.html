@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ระบบลงทะเบียนเอกสาร</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="bar">
+    <h1>ระบบลงทะเบียนเอกสาร</h1>
+    <span class="who" data-who></span>
+    <button id="logout" class="link" hidden style="color:#fff">ออกจากระบบ</button>
+  </header>
+
+  <main>
+    <div id="msg" class="msg"></div>
+
+    <section id="loginCard" class="card" hidden>
+      <h2>เข้าสู่ระบบ</h2>
+      <form id="loginForm">
+        <label>ชื่อผู้ใช้
+          <select id="name" required></select>
+        </label>
+        <label>รหัส PIN
+          <input id="pin" type="password" inputmode="numeric" autocomplete="current-password" required>
+        </label>
+        <button type="submit">เข้าสู่ระบบ</button>
+      </form>
+    </section>
+
+    <section id="menuCard" hidden>
+      <div class="card">
+        <h2>เมนู <span class="sub" id="roleLabel"></span></h2>
+        <div class="menu" id="menu"></div>
+      </div>
+    </section>
+  </main>
+
+  <script type="module">
+    import { api, onSubmit, showMessage, escapeHtml } from '/app.js';
+
+    const msg = document.getElementById('msg');
+    const loginCard = document.getElementById('loginCard');
+    const menuCard = document.getElementById('menuCard');
+    const logoutBtn = document.getElementById('logout');
+
+    const ROLE_LABEL = {
+      WAREHOUSE: 'ทีมคลังสินค้า', GM: 'ทีม GM', ACCOUNTING: 'ทีมบัญชี', ADMIN: 'ผู้ดูแลระบบ',
+    };
+
+    const LINKS = {
+      intake:     ['/intake.html', '📥 รับเอกสารเข้าระบบ', 'ถ่ายรูปเอกสารที่ได้รับ ระบบออกเลขทะเบียนให้ทันที'],
+      register:   ['/register.html', '📝 ลงทะเบียนเอกสาร', 'ตรวจ/เติมข้อมูลเอกสารที่คลังส่งมา'],
+      handover:   ['/handover.html', '📤 ส่งมอบให้ทีมบัญชี', 'เลือกเอกสารเป็นชุด พิมพ์ใบส่งมอบได้'],
+      accounting: ['/accounting.html', '✅ รับเอกสารจากทีม GM', 'กดรับ ระบบลงชื่อและวันที่ให้อัตโนมัติ'],
+      dashboard:  ['/dashboard.html', '📊 ทะเบียนเอกสารและสรุป', 'ค้นหา ดูเอกสารค้าง และดาวน์โหลด Excel'],
+    };
+
+    const MENU_BY_ROLE = {
+      WAREHOUSE: ['intake', 'dashboard'],
+      GM: ['register', 'handover', 'intake', 'dashboard'],
+      ACCOUNTING: ['accounting', 'dashboard'],
+      ADMIN: ['intake', 'register', 'handover', 'accounting', 'dashboard'],
+    };
+
+    function renderMenu(user) {
+      document.querySelector('[data-who]').textContent = user.name;
+      document.getElementById('roleLabel').textContent = ROLE_LABEL[user.role] || user.role;
+      document.getElementById('menu').innerHTML = (MENU_BY_ROLE[user.role] || [])
+        .map((key) => {
+          const [href, title, description] = LINKS[key];
+          return `<a href="${href}"><strong>${escapeHtml(title)}</strong><span>${escapeHtml(description)}</span></a>`;
+        })
+        .join('');
+      loginCard.hidden = true;
+      menuCard.hidden = false;
+      logoutBtn.hidden = false;
+    }
+
+    async function showLogin() {
+      const names = await api('/api/users/names');
+      const select = document.getElementById('name');
+      if (names.length === 0) {
+        showMessage(msg, 'ยังไม่มีผู้ใช้ในระบบ — รัน `npm run seed` เพื่อสร้างผู้ใช้ตั้งต้น');
+      }
+      select.innerHTML = names
+        .map((u) => `<option value="${escapeHtml(u.name)}">${escapeHtml(u.name)} — ${ROLE_LABEL[u.role] || u.role}</option>`)
+        .join('');
+      loginCard.hidden = false;
+    }
+
+    onSubmit(document.getElementById('loginForm'), msg, async () => {
+      const user = await api('/api/login', {
+        method: 'POST',
+        body: { name: document.getElementById('name').value, pin: document.getElementById('pin').value },
+      });
+      document.getElementById('pin').value = '';
+      renderMenu(user);
+    });
+
+    logoutBtn.addEventListener('click', async () => {
+      await api('/api/logout', { method: 'POST' });
+      location.reload();
+    });
+
+    // หน้าแรกใช้ร่วมกันทั้งก่อนและหลังเข้าสู่ระบบ จึงเช็คสถานะเองแทน requireUser
+    const session = await fetch('/api/me');
+    if (session.ok) renderMenu(await session.json());
+    else await showLogin();
+  </script>
+</body>
+</html>

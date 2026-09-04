@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ลงทะเบียนเอกสาร</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main>
+    <div id="msg" class="msg"></div>
+
+    <section class="card">
+      <h2>คิวรอลงทะเบียน <span class="sub" id="queueCount"></span></h2>
+      <p class="hint">เลือกเอกสารจากคิว ระบบจะแสดงรูปที่ทีมคลังถ่ายไว้ ให้ตรวจแล้วเติมข้อมูลที่ขาด</p>
+      <div id="queue"></div>
+    </section>
+
+    <section id="editorCard" class="card" hidden>
+      <h2 id="editorTitle"></h2>
+      <div id="photos"></div>
+      <div id="timeline"></div>
+
+      <form id="form" style="margin-top:14px">
+        <div class="row">
+          <label>ประเภทเอกสาร *
+            <select id="doc_type" required><option value="">— เลือก —</option></select>
+          </label>
+          <label>ผู้ส่ง / บริษัท *
+            <input id="vendor" required autocomplete="off">
+          </label>
+        </div>
+        <div class="row">
+          <label>เลขที่เอกสาร
+            <input id="doc_number" autocomplete="off">
+          </label>
+          <label>วันที่บนเอกสาร
+            <input id="doc_date" type="date">
+          </label>
+        </div>
+        <div class="row">
+          <label>จำนวนเงิน (บาท)
+            <input id="amount" inputmode="decimal" autocomplete="off">
+          </label>
+          <label>จำนวนฉบับ
+            <input id="copies" type="number" min="1" step="1">
+          </label>
+        </div>
+        <label>เรื่อง / รายการ
+          <input id="subject" autocomplete="off">
+        </label>
+        <label>หมายเหตุ
+          <textarea id="note"></textarea>
+        </label>
+        <div class="actions">
+          <button type="submit">ยืนยันลงทะเบียน</button>
+          <button type="button" id="ocrBtn" class="ghost" hidden>อ่านข้อมูลจากรูป (AI)</button>
+          <button type="button" id="closeBtn" class="ghost">ปิด</button>
+        </div>
+      </form>
+    </section>
+  </main>
+
+  <script type="module">
+    import {
+      api, requireUser, onSubmit, showMessage, pageHeader,
+      docCard, photoThumbs, timeline, escapeHtml, DOC_TYPES,
+    } from '/app.js';
+
+    pageHeader('ลงทะเบียนเอกสาร');
+    await requireUser('GM');
+
+    const msg = document.getElementById('msg');
+    const editorCard = document.getElementById('editorCard');
+    const FIELDS = ['doc_type', 'vendor', 'doc_number', 'doc_date', 'amount', 'copies', 'subject', 'note'];
+    let current = null;
+
+    document.getElementById('doc_type').insertAdjacentHTML(
+      'beforeend',
+      DOC_TYPES.map((t) => `<option>${t}</option>`).join('')
+    );
+
+    const { ocr } = await api('/api/config');
+    document.getElementById('ocrBtn').hidden = !ocr;
+
+    async function loadQueue() {
+      const docs = await api('/api/documents?status=INTAKE');
+      document.getElementById('queueCount').textContent = `${docs.length} ฉบับ`;
+      document.getElementById('queue').innerHTML = docs.length
+        ? docs.map((d) => docCard(d, `<div class="actions" style="margin-top:10px">
+             <button type="button" data-open="${d.id}">เปิดลงทะเบียน</button>
+           </div>`)).join('')
+        : '<p class="empty">ไม่มีเอกสารค้างลงทะเบียน 🎉</p>';
+    }
+
+    async function openDocument(id) {
+      current = await api(`/api/documents/${id}`);
+      document.getElementById('editorTitle').innerHTML =
+        `ลงทะเบียน ${escapeHtml(current.reg_no)} <span class="sub">คลังรับโดย ${escapeHtml(current.intake_by)}</span>`;
+      document.getElementById('photos').innerHTML = photoThumbs(current.photos);
+      document.getElementById('timeline').innerHTML = timeline(current.events);
+      for (const field of FIELDS) {
+        document.getElementById(field).value = current[field] ?? '';
+      }
+      editorCard.hidden = false;
+      editorCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    document.getElementById('queue').addEventListener('click', async (event) => {
+      const id = event.target.dataset.open;
+      if (!id) return;
+      showMessage(msg, '');
+      try {
+        await openDocument(id);
+      } catch (err) {
+        showMessage(msg, err.message);
+      }
+    });
+
+    document.getElementById('closeBtn').addEventListener('click', () => {
+      editorCard.hidden = true;
+      current = null;
+    });
+
+    document.getElementById('ocrBtn').addEventListener('click', async (event) => {
+      if (!current) return;
+      const button = event.target;
+      button.disabled = true;
+      button.textContent = 'กำลังอ่าน...';
+      showMessage(msg, '');
+      try {
+        const found = await api(`/api/documents/${current.id}/ocr`, { method: 'POST' });
+        // เติมเชพาะช่องที่ยังว่าง เพื่อไม่ทับข้อมูลที่คนกรอกไว้แล้ว
+        let filled = 0;
+        for (const field of ['doc_type', 'vendor', 'doc_number', 'doc_date', 'amount', 'subject']) {
+          const input = document.getElementById(field);
+          if (found[field] != null && found[field] !== '' && !input.value) {
+            input.value = found[field];
+            filled += 1;
+          }
+        }
+        showMessage(
+          msg,
+          filled > 0
+            ? `เติมข้อมูลให้ ${filled} ช่อง (ความมั่นใจ: ${found.confidence || 'ไม่ระบุ'}) — กรุณาตรวจกับรูปก่อนยืนยัน`
+            : 'อ่านรูปแล้วแต่ไม่ได้ข้อมูลเพิ่ม กรุณากรอกด้วยตนเอง',
+          filled > 0 ? 'ok' : 'err'
+        );
+      } catch (err) {
+        showMessage(msg, err.message);
+      } finally {
+        button.disabled = false;
+        button.textContent = 'อ่านข้อมูลจากรูป (AI)';
+      }
+    });
+
+    onSubmit(document.getElementById('form'), msg, async () => {
+      if (!current) throw new Error('กรุณาเลือกเอกสารจากคิวก่อน');
+      const body = {};
+      for (const field of FIELDS) body[field] = document.getElementById(field).value.trim();
+      const doc = await api(`/api/documents/${current.id}`, { method: 'PATCH', body });
+      editorCard.hidden = true;
+      current = null;
+      showMessage(msg, `ลงทะเบียน ${doc.reg_no} เรียบร้อย — พร้อมส่งมอบให้ทีมบัญชี`, 'ok');
+      await loadQueue();
+    });
+
+    await loadQueue();
+  </script>
+</body>
+</html>
