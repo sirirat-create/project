@@ -1,0 +1,19 @@
+{
+  "name": "doc-register",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "ระบบลงทะเบียนเอกสารสารบรรณ (รับ-ส่ง) คลังสินค้า → GM → บัญชี",
+  "scripts": {
+    "start": "node server/index.js",
+    "seed": "node server/seed.js",
+    "notify": "node server/notify-pending.js"
+  },
+  "engines": { "node": ">=22.5" },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.71.0",
+    "express": "^5.1.0",
+    "multer": "^2.0.2",
+    "xlsx": "^0.18.5"
+  }
+}
