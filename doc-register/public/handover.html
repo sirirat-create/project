@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ส่งมอบให้ทีมบัญชี</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main>
+    <div id="msg" class="msg"></div>
+
+    <section class="card no-print">
+      <h2>เอกสารพร้อมส่งมอบ <span class="sub" id="readyCount"></span></h2>
+      <p class="hint">เลือกเอกสารที่จะเดินไปส่งทีมบัญชีรอบนี้ ระบบจะออกใบส่งมอบ 1 ใบให้พิมพ์แนบไปกับเอกสารตัวจริง</p>
+      <div id="ready"></div>
+      <form id="form">
+        <div class="actions">
+          <button type="submit" id="submitBtn" disabled>สร้างใบส่งมอบ</button>
+          <button type="button" id="toggleAll" class="ghost">เลือกทั้งหมด</button>
+        </div>
+      </form>
+    </section>
+
+    <section id="slipCard" class="card" hidden>
+      <h2 id="slipTitle"></h2>
+      <div id="slip"></div>
+      <div class="actions no-print" style="margin-top:12px">
+        <button type="button" id="printBtn" class="ghost">พิมพ์ใบส่งมอบ</button>
+      </div>
+    </section>
+
+    <section class="card no-print">
+      <h2>ใบส่งมอบที่ยังไม่ถูกรับ <span class="sub" id="pendingCount"></span></h2>
+      <div id="pending"></div>
+    </section>
+  </main>
+
+  <script type="module">
+    import {
+      api, requireUser, onSubmit, showMessage, pageHeader,
+      escapeHtml, formatDateTime, formatAmount, elapsed,
+    } from '/app.js';
+
+    pageHeader('ส่งมอบให้ทีมบัญชี');
+    await requireUser('GM');
+
+    const msg = document.getElementById('msg');
+    const readyEl = document.getElementById('ready');
+    const submitBtn = document.getElementById('submitBtn');
+
+    const selectedIds = () =>
+      [...readyEl.querySelectorAll('input[type=checkbox]:checked')].map((el) => Number(el.value));
+
+    function refreshSubmitState() {
+      const count = selectedIds().length;
+      submitBtn.disabled = count === 0;
+      submitBtn.textContent = count === 0 ? 'สร้างใบส่งมอบ' : `สร้างใบส่งมอบ (${count} ฉบับ)`;
+    }
+
+    async function loadReady() {
+      const docs = await api('/api/documents?status=REGISTERED');
+      document.getElementById('readyCount').textContent = `${docs.length} ฉบับ`;
+      readyEl.innerHTML = docs.length
+        ? docs.map((d) => `<div class="doc"><label class="check" style="margin:0">
+             <input type="checkbox" value="${d.id}">
+             <span>
+               <b>${escapeHtml(d.reg_no)}</b> — ${escapeHtml(d.vendor || '-')} · ${escapeHtml(d.doc_type || '-')}
+               ${d.doc_number ? ` · เลขที่ ${escapeHtml(d.doc_number)}` : ''}
+               ${d.amount != null ? ` · ${formatAmount(d.amount)} บาท` : ''}
+               <br><span class="muted" style="font-size:13px">ลงทะเบียน ${formatDateTime(d.registered_at)} · ค้างมา ${elapsed(d.registered_at)}</span>
+             </span>
+           </label></div>`).join('')
+        : '<p class="empty">ยังไม่มีเอกสารที่ลงทะเบียนแล้วรอส่ง</p>';
+      refreshSubmitState();
+    }
+
+    async function loadPending() {
+      const handovers = await api('/api/handovers?pending=1');
+      document.getElementById('pendingCount').textContent = `${handovers.length} ใบ`;
+      document.getElementById('pending').innerHTML = handovers.length
+        ? handovers.map((h) => `<div class="doc">
+             <div class="doc-head">
+               <span class="reg">${escapeHtml(h.code)}</span>
+               <span class="pill IN_TRANSIT">รอบัญชีรับ</span>
+               <span class="muted" style="font-size:13px">${h.document_count} ฉบับ · ส่ง ${formatDateTime(h.created_at)} · รอมา ${elapsed(h.created_at)}</span>
+             </div>
+             <button type="button" class="link" data-slip="${h.id}">ดู / พิมพ์ใบส่งมอบ</button>
+           </div>`).join('')
+        : '<p class="empty">ทีมบัญชีรับครบทุกใบแล้ว 🎉</p>';
+    }
+
+    function renderSlip(handover) {
+      document.getElementById('slipTitle').textContent = `ใบส่งมอบเอกสาร ${handover.code}`;
+      const rows = handover.documents.map((d, i) => `<tr>
+          <td style="padding:4px 8px;border-bottom:1px solid #e2e5ea">${i + 1}</td>
+          <td style="padding:4px 8px;border-bottom:1px solid #e2e5ea">${escapeHtml(d.reg_no)}</td>
+          <td style="padding:4px 8px;border-bottom:1px solid #e2e5ea">${escapeHtml(d.doc_type || '-')}</td>
+          <td style="padding:4px 8px;border-bottom:1px solid #e2e5ea">${escapeHtml(d.doc_number || '-')}</td>
+          <td style="padding:4px 8px;border-bottom:1px solid #e2e5ea">${escapeHtml(d.vendor || '-')}</td>
+          <td style="padding:4px 8px;border-bottom:1px solid #e2e5ea;text-align:right">${formatAmount(d.amount)}</td>
+        </tr>`).join('');
+
+      document.getElementById('slip').innerHTML = `
+        <p class="muted" style="margin-top:0">ผู้ส่งมอบ: <b>${escapeHtml(handover.created_by)}</b> · วันเวลา ${formatDateTime(handover.created_at)} · ส่งถึง: ทีมบัญชี</p>
+        <table style="width:100%;border-collapse:collapse;font-size:14px">
+          <thead><tr style="text-align:left;background:#f4f5f7">
+            <th style="padding:6px 8px">#</th><th style="padding:6px 8px">เลขทะเบียน</th>
+            <th style="padding:6px 8px">ประเภท</th><th style="padding:6px 8px">เลขที่เอกสาร</th>
+            <th style="padding:6px 8px">ผู้ส่ง</th><th style="padding:6px 8px;text-align:right">จำนวนเงิน</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+        <p style="margin-top:20px">รวม <b>${handover.documents.length}</b> ฉบับ</p>
+        ${handover.accepted_at
+          ? `<p>ทีมบัญชีรับแล้วโดย <b>${escapeHtml(handover.accepted_by)}</b> เมื่อ ${formatDateTime(handover.accepted_at)}</p>`
+          : `<p style="margin-top:26px">ผู้รับฝ่ายบัญชี ......................................... วันที่ ....................<br>
+             <span class="muted" style="font-size:13px">(หรือให้ทีมบัญชีกดรับในระบบ ซึ่งจะบันทึกชื่อและเวลาให้อัตโนมัติ)</span></p>`}
+      `;
+      document.getElementById('slipCard').hidden = false;
+      document.getElementById('slipCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    readyEl.addEventListener('change', refreshSubmitState);
+
+    document.getElementById('toggleAll').addEventListener('click', () => {
+      const boxes = [...readyEl.querySelectorAll('input[type=checkbox]')];
+      const turnOn = boxes.some((box) => !box.checked);
+      for (const box of boxes) box.checked = turnOn;
+      refreshSubmitState();
+    });
+
+    document.getElementById('pending').addEventListener('click', async (event) => {
+      const id = event.target.dataset.slip;
+      if (!id) return;
+      showMessage(msg, '');
+      try {
+        renderSlip(await api(`/api/handovers/${id}`));
+      } catch (err) {
+        showMessage(msg, err.message);
+      }
+    });
+
+    document.getElementById('printBtn').addEventListener('click', () => window.print());
+
+    onSubmit(document.getElementById('form'), msg, async () => {
+      const ids = selectedIds();
+      if (ids.length === 0) throw new Error('กรุณาเลือกเอกสารอย่างน้อย 1 ฉบับ');
+      const handover = await api('/api/handovers', { method: 'POST', body: { document_ids: ids } });
+      showMessage(msg, `สร้างใบส่งมอบ ${handover.code} แล้ว (${handover.documents.length} ฉบับ) — พิมพ์แนบไปกับเอกสารตัวจริง`, 'ok');
+      renderSlip(handover);
+      await Promise.all([loadReady(), loadPending()]);
+    });
+
+    await Promise.all([loadReady(), loadPending()]);
+  </script>
+</body>
+</html>

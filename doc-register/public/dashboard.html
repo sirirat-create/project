@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ทะเบียนเอกสารและสรุป</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main>
+    <div id="msg" class="msg"></div>
+
+    <section class="stats" id="stats"></section>
+
+    <section class="card" style="margin-top:14px">
+      <h2>ค้นหาทะเบียนเอกสาร</h2>
+      <form id="filterForm">
+        <label>คำค้น
+          <input id="q" placeholder="เลขทะเบียน / เลขที่เอกสาร / ผู้ส่ง / เรื่อง" autocomplete="off">
+        </label>
+        <div class="row">
+          <label>สถานะ
+            <select id="status">
+              <option value="">ทุกสถานะ</option>
+              <option value="INTAKE">รอลงทะเบียน</option>
+              <option value="REGISTERED">รอส่งบัญชี</option>
+              <option value="IN_TRANSIT">รอบัญชีรับ</option>
+              <option value="ACCEPTED">บัญชีรับแล้ว</option>
+            </select>
+          </label>
+          <label>คลังรับตั้งแต่
+            <input id="from" type="date">
+          </label>
+          <label>ถึง
+            <input id="to" type="date">
+          </label>
+        </div>
+        <div class="actions">
+          <button type="submit">ค้นหา</button>
+          <button type="button" id="exportBtn" class="ghost">ดาวน์โหลด Excel</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="card">
+      <h2>ผลการค้นหา <span class="sub" id="resultCount"></span></h2>
+      <div id="results"></div>
+    </section>
+  </main>
+
+  <script type="module">
+    import {
+      api, requireUser, onSubmit, showMessage, pageHeader,
+      docCard, timeline, photoThumbs, elapsed,
+    } from '/app.js';
+
+    pageHeader('ทะเบียนเอกสารและสรุป');
+    await requireUser();
+
+    const msg = document.getElementById('msg');
+    const resultsEl = document.getElementById('results');
+
+    function currentQuery() {
+      const params = new URLSearchParams();
+      for (const id of ['q', 'status', 'from', 'to']) {
+        const value = document.getElementById(id).value.trim();
+        if (value) params.set(id, value);
+      }
+      return params;
+    }
+
+    async function loadStats() {
+      const stats = await api('/api/stats');
+      const cards = [
+        ['INTAKE', 'รอลงทะเบียน (อยู่ที่ทีม GM)'],
+        ['REGISTERED', 'รอส่งบัญชี'],
+        ['IN_TRANSIT', 'รอบัญชีรับ'],
+        ['ACCEPTED', 'บัญชีรับแล้ว (ทั้งหมด)'],
+      ].map(([status, label]) => {
+        const since = stats.oldest_pending[status];
+        return `<div class="stat">
+          <div class="n">${stats.by_status[status]}</div>
+          <div class="k">${label}</div>
+          ${since ? `<div class="aging">ค้างนานสุด ${elapsed(since)}</div>` : ''}
+        </div>`;
+      });
+      cards.push(`<div class="stat">
+        <div class="n">${stats.intake_today}</div><div class="k">รับเข้าวันนี้</div></div>`);
+      document.getElementById('stats').innerHTML = cards.join('');
+    }
+
+    async function loadResults() {
+      const docs = await api(`/api/documents?${currentQuery()}`);
+      document.getElementById('resultCount').textContent = `${docs.length} ฉบับ`;
+      resultsEl.innerHTML = docs.length
+        ? docs.map((d) => docCard(d, `<button type="button" class="link" data-detail="${d.id}">ดูรูปและประวัติ</button>
+             <div data-detail-slot="${d.id}"></div>`)).join('')
+        : '<p class="empty">ไม่พบเอกสารตามเงื่อนไข</p>';
+    }
+
+    resultsEl.addEventListener('click', async (event) => {
+      const id = event.target.dataset.detail;
+      if (!id) return;
+      const slot = resultsEl.querySelector(`[data-detail-slot="${id}"]`);
+      if (slot.innerHTML) { slot.innerHTML = ''; return; }
+      try {
+        const doc = await api(`/api/documents/${id}`);
+        slot.innerHTML = photoThumbs(doc.photos) + timeline(doc.events);
+      } catch (err) {
+        showMessage(msg, err.message);
+      }
+    });
+
+    document.getElementById('exportBtn').addEventListener('click', () => {
+      location.href = `/api/export.xlsx?${currentQuery()}`;
+    });
+
+    onSubmit(document.getElementById('filterForm'), msg, loadResults);
+
+    await Promise.all([loadStats(), loadResults()]);
+  </script>
+</body>
+</html>
