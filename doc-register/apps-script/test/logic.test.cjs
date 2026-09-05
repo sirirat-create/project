@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const src = fs.readFileSync(path.join(__dirname, '..', 'Code.gs'), 'utf8');
 
-/* ---------- fake Apps Script services ---------- */
+/* ---------- จำลอง Google Sheets / Drive ---------- */
 class FakeRange {
   constructor(sheet, r, c, nr, nc) { Object.assign(this, { sheet, r, c, nr, nc }); }
   getValues() {
@@ -18,18 +18,19 @@ class FakeRange {
     v.forEach((row, i) => row.forEach((val, j) => this.sheet.set(this.r + i, this.c + j, val)));
     return this;
   }
+  setValue(v) { this.sheet.set(this.r, this.c, v); return this; }
   setBackground(color) {
     for (let i = 0; i < this.nr; i++)
       for (let j = 0; j < this.nc; j++) this.sheet.bg[`${this.r + i},${this.c + j}`] = color;
     return this;
   }
   setFontWeight() { return this; }
+  getDataValidation() { return this.sheet.validation[`${this.r},${this.c}`] || null; }
 }
 class FakeSheet {
-  constructor(name, grid, maxCols) {
-    this.name = name; this.grid = grid; this.bg = {};
-    this.maxCols = maxCols || Math.max(...grid.map(r => r.length));
-    this.hidden = [];
+  constructor(name, grid) {
+    this.name = name; this.grid = grid; this.bg = {}; this.validation = {}; this.hidden = [];
+    this.maxCols = Math.max(...grid.map(r => r.length));
   }
   cell(r, c) { const row = this.grid[r - 1] || []; const v = row[c - 1]; return v === undefined ? '' : v; }
   set(r, c, v) {
@@ -46,32 +47,41 @@ class FakeSheet {
   appendRow(row) { this.grid.push(row.slice()); }
   insertColumnsAfter(after, n) { this.maxCols += n; }
   hideColumns(c) { this.hidden.push(c); }
+  setDropdown(r, c, options) { this.validation[`${r},${c}`] = { getCriteriaValues: () => [options] }; }
 }
-const HEADERS = ['ลำดับที่','วันที่รับเอกสาร/พัสดุ','ประเภทเอกสาร','เลข tracking / เลข INV',
-  'ผู้ส่ง','ชื่อผู้รับ','บริษัท','แผนกผู้รับ','มารับเอกสารเรียบร้อย','ลงชื่อ ผู้รับเอกสาร',
-  'วันที่เข้ารับ','ส่งเอกสารเรียบร้อย','ลงชื่อ ทีมGM ผู้ตรวจเอกสาร','วันที่ตรวจสอบและส่งมอบเอกสาร','หมายเหตุ'];
 
-let activeSheet;
+// หัวคอลัมน์จริงของแท็บที่ทีมใช้ (12 คอลัมน์)
+const WH300 = ['ลำดับที่', 'วันที่รับเอกสาร/พัสดุ', 'ประเภทเอกสาร', 'เลข tracking / เลข INV',
+  'ผู้ส่ง', 'ชื่อผู้รับ', 'บริษัท', 'แผนกผู้รับ', 'มารับเอกสารเรียบร้อย',
+  'ลงชื่อ ผู้รับเอกสาร', 'วันที่เข้ารับ', 'หมายเหตุ'];
+// แท็บเก่าที่มี 15 คอลัมน์ ต้องใช้ได้เหมือนกัน
+const OLD15 = WH300.slice(0, 11).concat(
+  ['ส่งเอกสารเรียบร้อย', 'ลงชื่อ ทีมGM ผู้ตรวจเอกสาร', 'วันที่ตรวจสอบและส่งมอบเอกสาร', 'หมายเหตุ']);
+
+let sheets = {};
 const fakes = {
   SpreadsheetApp: {
-    getActive: () => ({ getSheetByName: n => (activeSheet.getName() === n ? activeSheet : null), getSheets: () => [activeSheet] }),
+    getActive: () => ({
+      getSheetByName: n => sheets[n] || null,
+      getSheets: () => Object.values(sheets),
+    }),
     getUi: () => { throw new Error('no ui'); },
   },
-  Utilities: { formatDate: () => '4-Sep-26', base64Encode: () => 'BASE64' },
+  Utilities: { formatDate: () => '5-Sep-26', base64Encode: () => 'BASE64' },
   Logger: { log: () => {} },
   PropertiesService: { getScriptProperties: () => ({ getProperty: () => null, setProperty: () => {} }) },
   DriveApp: {}, LockService: {}, ScriptApp: {}, UrlFetchApp: {},
 };
 const factory = new Function(...Object.keys(fakes), src +
-  '; return { parseJson_, padSeq_, shortLabel_, buildNote_, getSheet_, readSheetState_, appendRow_, ensureExtraColumns_, COL, LAST_COL };');
+  '; return { parseJson_, padSeq_, shortLabel_, buildNote_, resolveSheet_, ensureExtraColumns_,' +
+  ' readSheetState_, appendRow_, buildPrompt_, readDropdownOptions_, SHEET_NAME, BASE_PROMPT };');
 const M = factory(...Object.values(fakes));
 
-/* ---------- assertions ---------- */
+/* ---------- ตัวช่วยเช็ค ---------- */
 let pass = 0, fail = 0;
 const eq = (name, got, want) => {
-  const ok = JSON.stringify(got) === JSON.stringify(want);
-  if (ok) { pass++; console.log('  ok   ' + name); }
-  else { fail++; console.log('  FAIL ' + name + '\n        got  ' + JSON.stringify(got) + '\n        want ' + JSON.stringify(want)); }
+  if (JSON.stringify(got) === JSON.stringify(want)) { pass++; console.log('  ok   ' + name); }
+  else { fail++; console.log('  FAIL ' + name + '\n        ได้  ' + JSON.stringify(got) + '\n        ควรได้ ' + JSON.stringify(want)); }
 };
 const throws = (name, fn, re) => {
   try { fn(); fail++; console.log('  FAIL ' + name + ' (ไม่ throw)'); }
@@ -80,6 +90,13 @@ const throws = (name, fn, re) => {
     else { fail++; console.log('  FAIL ' + name + ' — ข้อความ: ' + e.message); }
   }
 };
+const useTab = (name, headers, rows = []) => {
+  sheets = {}; sheets[name] = new FakeSheet(name, [headers.slice()].concat(rows));
+  return sheets[name];
+};
+
+console.log('\n=== แท็บที่ตั้งไว้ต้องเป็นแท็บที่ทีมใช้จริง ===');
+eq('SHEET_NAME', M.SHEET_NAME, 'รายการรับเอกสารภายนอกWH300');
 
 console.log('\n=== parseJson_ ===');
 eq('JSON ล้วน', M.parseJson_('{"a":1}'), { a: 1 });
@@ -90,77 +107,109 @@ throws('ขยะ → error', () => M.parseJson_('อ่านไม่ออก
 
 console.log('\n=== padSeq_ / shortLabel_ / buildNote_ ===');
 eq('padSeq 7', M.padSeq_(7), '0007');
-eq('padSeq 1234', M.padSeq_(1234), '1234');
+eq('padSeq 4457 (เลขจริงของทีม)', M.padSeq_(4457), '4457');
 eq('padSeq 99999', M.padSeq_(99999), '99999');
-eq('ตัดอักขระต้องห้ามในชื่อไฟล์', M.shortLabel_({ tracking: 'IV/2023:100*82?' }, { getName: () => 'x' }), 'IV-2023-100-82-');
-eq('ไม่มีข้อมูล → ใช้ชื่อไฟล์เดิม', M.shortLabel_(null, { getName: () => 'IMG_001.jpg' }), 'IMG_001.jpg');
+eq('ตัดอักขระต้องห้ามในชื่อไฟล์', M.shortLabel_({ tracking: 'W-IN/17:6908*15?' }, { name: 'x' }), 'W-IN-17-6908-15-');
+eq('ไม่มีข้อมูล → ใช้ชื่อไฟล์เดิม', M.shortLabel_(null, { name: 'IMG_001.jpg' }), 'IMG_001.jpg');
 eq('อ่านไม่สำเร็จ → บอกให้กรอกมือ', M.buildNote_({}, 'timeout'), 'อ่านรูปไม่สำเร็จ กรุณากรอกมือ (timeout)');
 eq('confidence high → ไม่รกหมายเหตุ', M.buildNote_({ confidence: 'high' }, null), '');
 eq('confidence low + note', M.buildNote_({ note: 'ซองฉีก', confidence: 'low' }, null), 'ซองฉีก · AI ความมั่นใจ: low');
 
-console.log('\n=== getSheet_ ยอมเขียนเฉพาะแท็บที่หัวตรง ===');
-activeSheet = new FakeSheet('รายการรับ-ส่งเอกสาร', [HEADERS.slice()]);
-eq('หัวตรง → ผ่าน', M.getSheet_().getName(), 'รายการรับ-ส่งเอกสาร');
-activeSheet = new FakeSheet('แท็บอื่น', [['ชื่อ', 'นามสกุล', 'ตำแหน่ง']]);
-throws('หัวไม่ตรง → หยุด ไม่เขียนทับ', () => M.getSheet_(), /หัวคอลัมน์ที่ 1/);
-const shifted = HEADERS.slice(); shifted.splice(3, 1);
-activeSheet = new FakeSheet('รายการรับ-ส่งเอกสาร', [shifted]);
-throws('คอลัมน์ถูกลบ → จับได้', () => M.getSheet_(), /หัวคอลัมน์ที่ 4/);
+console.log('\n=== resolveSheet_ หาคอลัมน์จากชื่อหัวตาราง ===');
+useTab('รายการรับเอกสารภายนอกWH300', WH300);
+let found = M.resolveSheet_();
+eq('แท็บ 12 คอลัมน์: ลำดับที่ = A', found.cols.seq, 1);
+eq('แท็บ 12 คอลัมน์: แผนกผู้รับ = H', found.cols.dept, 8);
+eq('แท็บ 12 คอลัมน์: หมายเหตุ = L (ไม่ใช่ O)', found.cols.note, 12);
+
+useTab('รายการรับเอกสารภายนอกWH300', OLD15);
+eq('แท็บ 15 คอลัมน์: หมายเหตุ = O', M.resolveSheet_().cols.note, 15);
+eq('แท็บ 15 คอลัมน์: แผนกผู้รับ ยังเป็น H', M.resolveSheet_().cols.dept, 8);
+
+useTab('รายการรับเอกสารภายนอกWH300', ['ชื่อ', 'นามสกุล', 'ตำแหน่ง']);
+throws('หัวคอลัมน์ที่จำเป็นหาย → หยุด', () => M.resolveSheet_(), /ไม่มีหัวคอลัมน์/);
+
+sheets = { 'แท็บอื่น': new FakeSheet('แท็บอื่น', [WH300.slice()]) };
+throws('ไม่เจอแท็บที่ตั้งชื่อไว้ → บอกว่ามีแท็บอะไรบ้าง', () => M.resolveSheet_(), /ไม่พบแท็บชื่อ.*แท็บที่มีคือ/);
+
+console.log('\n=== ensureExtraColumns_ เพิ่มต่อท้าย ไม่แทรกกลาง ===');
+const s12 = useTab('รายการรับเอกสารภายนอกWH300', WH300);
+let cols = M.ensureExtraColumns_(M.resolveSheet_());
+eq('ลิงก์รูปไปอยู่คอลัมน์ 13', cols.photoUrl, 13);
+eq('รหัสไฟล์ไปอยู่คอลัมน์ 14', cols.fileId, 14);
+eq('ซ่อนคอลัมน์รหัสไฟล์', s12.hidden, [14]);
+eq('ไม่แตะหัว 12 คอลัมน์เดิม', s12.grid[0].slice(0, 12), WH300);
+const before = JSON.stringify(s12.grid[0]);
+M.ensureExtraColumns_(M.resolveSheet_());
+eq('รันซ้ำไม่เพิ่มซ้ำ', JSON.stringify(s12.grid[0]), before);
 
 console.log('\n=== readSheetState_ (เลขลำดับ + กันซ้ำ) ===');
-const withRows = [HEADERS.slice()];
-[[3, 'FILE_C'], [1, 'FILE_A'], [2, 'FILE_B']].forEach(([seq, id]) => {
-  const row = new Array(17).fill('');
-  row[0] = seq; row[16] = id;
-  withRows.push(row);
-});
-activeSheet = new FakeSheet('รายการรับ-ส่งเอกสาร', withRows, 17);
-const state = M.readSheetState_(activeSheet);
+const withRows = [[3, '', '', '', '', '', '', '', '', '', '', '', '', 'slack:F3'],
+                  [1, '', '', '', '', '', '', '', '', '', '', '', '', 'slack:F1'],
+                  [2, '', '', '', '', '', '', '', '', '', '', '', '', 'slack:F2']];
+useTab('รายการรับเอกสารภายนอกWH300', WH300.concat(['ลิงก์รูป', 'รหัสไฟล์']), withRows);
+found = M.resolveSheet_();
+const state = M.readSheetState_(found.sheet, found.cols);
 eq('เลขลำดับล่าสุด = ค่าสูงสุด ไม่ใช่แถวสุดท้าย', state.seq, 3);
-eq('จำรหัสไฟล์ที่ลงแล้ว', Object.keys(state.fileIds).sort(), ['FILE_A', 'FILE_B', 'FILE_C']);
-activeSheet = new FakeSheet('รายการรับ-ส่งเอกสาร', [HEADERS.slice()], 17);
-eq('ชีตเปล่า → เริ่มที่ 0', M.readSheetState_(activeSheet).seq, 0);
+eq('จำรหัสไฟล์ Slack ที่ลงแล้ว', Object.keys(state.fileIds).sort(), ['slack:F1', 'slack:F2', 'slack:F3']);
+useTab('รายการรับเอกสารภายนอกWH300', WH300.concat(['ลิงก์รูป', 'รหัสไฟล์']));
+found = M.resolveSheet_();
+eq('ชีตเปล่า → เริ่มที่ 0', M.readSheetState_(found.sheet, found.cols).seq, 0);
 
-console.log('\n=== appendRow_ (คอลัมน์ถูกช่อง + ไฮไลต์) ===');
-const file = { getUrl: () => 'https://drive/FILE1', getId: () => 'FILE1', getName: () => 'a.jpg' };
-activeSheet = new FakeSheet('รายการรับ-ส่งเอกสาร', [HEADERS.slice()], 17);
-M.appendRow_(activeSheet, 494, file, {
-  doc_type: 'ใบกำกับภาษี', tracking: 'IV-2026001', sender: 'Hikawa',
-  recipient: 'บริษัท ทีดี ฟู้ดแอนด์เบอเวอเรจ จำกัด', company: 'TD', dept: 'Accounting', confidence: 'high',
+console.log('\n=== appendRow_ ลงตรงช่องบนแท็บ 12 คอลัมน์ ===');
+const sheet = useTab('รายการรับเอกสารภายนอกWH300', WH300);
+cols = M.ensureExtraColumns_(M.resolveSheet_());
+M.appendRow_(sheet, cols, 4457, 'slack:F99', 'https://drive/A', {
+  doc_type: 'ซองจดหมาย', tracking: 'EM307635063TH', sender: 'บริษัท ไทยเม็ททอล อลูมิเนียม จำกัด',
+  recipient: 'บัญชี', company: 'TD', dept: 'Accounting', confidence: 'high',
 }, null);
-const r = activeSheet.grid[1];
-eq('ลำดับที่', r[M.COL.SEQ - 1], 494);
-eq('ประเภทเอกสาร', r[M.COL.DOC_TYPE - 1], 'ใบกำกับภาษี');
-eq('เลข tracking', r[M.COL.TRACKING - 1], 'IV-2026001');
-eq('บริษัท', r[M.COL.COMPANY - 1], 'TD');
-eq('แผนกผู้รับ', r[M.COL.DEPT - 1], 'Accounting');
-eq('ลิงก์รูป', r[M.COL.PHOTO_URL - 1], 'https://drive/FILE1');
-eq('รหัสไฟล์', r[M.COL.FILE_ID - 1], 'FILE1');
-eq('ไม่แตะคอลัมน์ที่ทีมกรอกเอง (9-14)', r.slice(8, 14), ['', '', '', '', '', '']);
-eq('ข้อมูลครบ+มั่นใจ → ไม่ไฮไลต์', Object.keys(activeSheet.bg).length, 0);
+const r = sheet.grid[1];
+eq('ลำดับที่', r[0], 4457);
+eq('วันที่รับ รูปแบบเดียวกับที่ทีมใช้', r[1], '5-Sep-26');
+eq('ประเภทเอกสาร = ชนิดซอง', r[2], 'ซองจดหมาย');
+eq('เลข tracking', r[3], 'EM307635063TH');
+eq('ผู้ส่ง', r[4], 'บริษัท ไทยเม็ททอล อลูมิเนียม จำกัด');
+eq('ชื่อผู้รับ = ชื่อแผนกภาษาไทย', r[5], 'บัญชี');
+eq('บริษัท', r[6], 'TD');
+eq('แผนกผู้รับ', r[7], 'Accounting');
+eq('ไม่แตะช่องติ๊กรับ/ลงชื่อ/วันที่เข้ารับ (I-K)', r.slice(8, 11), ['', '', '']);
+eq('ลิงก์รูป', r[12], 'https://drive/A');
+eq('รหัสไฟล์', r[13], 'slack:F99');
+eq('ข้อมูลครบ + มั่นใจ → ไม่ไฮไลต์', Object.keys(sheet.bg).length, 0);
 
-activeSheet = new FakeSheet('รายการรับ-ส่งเอกสาร', [HEADERS.slice()], 17);
-M.appendRow_(activeSheet, 495, file, { doc_type: 'พัสดุ', sender: 'Hikawa', confidence: 'high' }, null);
+const sheet2 = useTab('รายการรับเอกสารภายนอกWH300', WH300);
+cols = M.ensureExtraColumns_(M.resolveSheet_());
+M.appendRow_(sheet2, cols, 4458, 'slack:F98', 'https://drive/B',
+  { doc_type: 'ซองน้ำตาล', sender: 'SCB', confidence: 'high' }, null);
 eq('ช่องที่อ่านไม่ได้ถูกไฮไลต์เหลือง',
-  [M.COL.TRACKING, M.COL.RECIPIENT, M.COL.COMPANY, M.COL.DEPT].map(c => activeSheet.bg[`2,${c}`]),
+  [4, 6, 7, 8].map(c => sheet2.bg[`2,${c}`]),
   ['#fff4d6', '#fff4d6', '#fff4d6', '#fff4d6']);
-eq('ช่องที่อ่านได้ไม่ถูกไฮไลต์', activeSheet.bg[`2,${M.COL.DOC_TYPE}`], undefined);
+eq('ช่องที่อ่านได้ไม่ถูกไฮไลต์', sheet2.bg['2,3'], undefined);
 
-activeSheet = new FakeSheet('รายการรับ-ส่งเอกสาร', [HEADERS.slice()], 17);
-M.appendRow_(activeSheet, 496, file, null, 'Claude API ตอบ 529');
-eq('อ่านไม่สำเร็จ → ยังบันทึกแถว ไม่ทำเอกสารหาย', activeSheet.grid[1][M.COL.SEQ - 1], 496);
-eq('อ่านไม่สำเร็จ → ยังมีลิงก์รูปให้ตามได้', activeSheet.grid[1][M.COL.PHOTO_URL - 1], 'https://drive/FILE1');
-eq('อ่านไม่สำเร็จ → ไฮไลต์แดงทั้งแถว', activeSheet.bg[`2,1`], '#fde8e6');
+const sheet3 = useTab('รายการรับเอกสารภายนอกWH300', WH300);
+cols = M.ensureExtraColumns_(M.resolveSheet_());
+M.appendRow_(sheet3, cols, 4459, 'slack:F97', 'https://drive/C', null, 'Claude API ตอบ 529');
+eq('อ่านไม่สำเร็จ → ยังบันทึกแถว ไม่ทำเอกสารหาย', sheet3.grid[1][0], 4459);
+eq('อ่านไม่สำเร็จ → ยังมีลิงก์รูปให้ตามได้', sheet3.grid[1][12], 'https://drive/C');
+eq('อ่านไม่สำเร็จ → ไฮไลต์แดงทั้งแถว', sheet3.bg['2,1'], '#fde8e6');
+eq('อ่านไม่สำเร็จ → หมายเหตุบอกให้กรอกมือ',
+  sheet3.grid[1][11].indexOf('กรุณากรอกมือ') !== -1, true);
 
-console.log('\n=== ensureExtraColumns_ ===');
-activeSheet = new FakeSheet('รายการรับ-ส่งเอกสาร', [HEADERS.slice()], 15);
-M.ensureExtraColumns_(activeSheet);
-eq('เพิ่มหัว 2 คอลัมน์ท้าย', activeSheet.grid[0].slice(15, 17), ['ลิงก์รูป', 'รหัสไฟล์']);
-eq('ซ่อนคอลัมน์รหัสไฟล์', activeSheet.hidden, [17]);
-eq('ไม่แตะหัว 15 คอลัมน์เดิม', activeSheet.grid[0].slice(0, 15), HEADERS);
-const before = JSON.stringify(activeSheet.grid[0]);
-M.ensureExtraColumns_(activeSheet);
-eq('รันซ้ำแล้วไม่เพิ่มซ้ำ', JSON.stringify(activeSheet.grid[0]), before);
+console.log('\n=== อ่านตัวเลือก dropdown จากชีตจริง ===');
+const s4 = useTab('รายการรับเอกสารภายนอกWH300', WH300, [new Array(12).fill('')]);
+s4.setDropdown(2, 7, ['TD', 'CW', 'BG', 'DH', 'SP']);
+s4.setDropdown(2, 8, ['Accounting', 'HR/GM', 'Operation', 'Others']);
+eq('อ่านตัวเลือกบริษัทได้', M.readDropdownOptions_(s4, 7), ['TD', 'CW', 'BG', 'DH', 'SP']);
+eq('อ่านตัวเลือกแผนกได้', M.readDropdownOptions_(s4, 8), ['Accounting', 'HR/GM', 'Operation', 'Others']);
+eq('ไม่มี dropdown → คืนค่าว่าง', M.readDropdownOptions_(s4, 5), []);
+eq('ไม่ส่งคอลัมน์มา → คืนค่าว่าง', M.readDropdownOptions_(s4, undefined), []);
+
+console.log('\n=== buildPrompt_ ต่อรายการตัวเลือกจริงเข้าไปในโจทย์ ===');
+const prompt = M.buildPrompt_(['TD', 'CW'], ['Accounting', 'HR/GM']);
+eq('บอกโมเดลว่าบริษัทมีอะไรบ้าง', prompt.indexOf('TD | CW') !== -1, true);
+eq('บอกโมเดลว่าแผนกมีอะไรบ้าง', prompt.indexOf('Accounting | HR/GM') !== -1, true);
+eq('อ่าน dropdown ไม่ได้ → ใช้โจทย์ตั้งต้นเฉยๆ', M.buildPrompt_([], []), M.BASE_PROMPT);
+eq('โจทย์บอกว่า ประเภทเอกสาร คือชนิดซอง', M.BASE_PROMPT.indexOf('ชนิดของซอง') !== -1, true);
 
 console.log(`\n${pass} ผ่าน / ${fail} ไม่ผ่าน`);
 process.exit(fail ? 1 : 0);
